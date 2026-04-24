@@ -1,0 +1,179 @@
+import { useState, useEffect } from 'react';
+import { motion } from 'framer-motion';
+import { Search, MapPin, Star, Filter, Leaf, ShoppingCart, Loader2 } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { useNavigate } from 'react-router-dom';
+import { useApp } from '@/contexts/AppContext';
+import { useLanguage } from '@/contexts/LanguageContext';
+import { supabase } from '@/integrations/supabase/client';
+import { toast } from 'sonner';
+import ProductFlipCard from '@/components/consumer/ProductFlipCard';
+
+interface Product {
+  id: string;
+  name: string;
+  category: string;
+  price: number;
+  unit: string;
+  grade: string;
+  organic: boolean;
+  farm_name: string | null;
+  farm_distance: string | null;
+  rating: number;
+  review_count: number;
+  farmer_id: string;
+  quality_metrics?: any;
+  quality_scan_image?: string | null;
+}
+
+const ConsumerHome = () => {
+  const navigate = useNavigate();
+  const { userName, user } = useApp();
+  const { t } = useLanguage();
+  const [activeCategory, setActiveCategory] = useState('All');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [products, setProducts] = useState<Product[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const categories = [
+    { key: 'All', label: t.all },
+    { key: 'Vegetables', label: t.vegetables },
+    { key: 'Fruits', label: t.fruits },
+    { key: 'Grains', label: t.grains },
+    { key: 'Dairy', label: t.dairy },
+    { key: 'Organic', label: t.organic },
+  ];
+
+  useEffect(() => {
+    const fetchProducts = async () => {
+      const { data, error } = await supabase
+        .from('products')
+        .select('*')
+        .eq('in_stock', true)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching products:', error);
+        toast.error('Failed to load products');
+      } else {
+        setProducts(data || []);
+      }
+      setLoading(false);
+    };
+
+    fetchProducts();
+
+    const channel = supabase
+      .channel('products-realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
+        fetchProducts();
+      })
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
+  const filteredProducts = products.filter((p) => {
+    const matchesCategory = activeCategory === 'All' || p.category === activeCategory || (activeCategory === 'Organic' && p.organic);
+    const matchesSearch = !searchQuery || p.name.toLowerCase().includes(searchQuery.toLowerCase()) || (p.farm_name || '').toLowerCase().includes(searchQuery.toLowerCase());
+    return matchesCategory && matchesSearch;
+  });
+
+  const handleAddToCart = async (e: React.MouseEvent, product: Product) => {
+    e.stopPropagation();
+    if (!user) { toast.error('Please log in first'); return; }
+
+    const { error } = await supabase
+      .from('cart_items')
+      .upsert(
+        { user_id: user.id, product_id: product.id, quantity: 1 },
+        { onConflict: 'user_id,product_id' }
+      );
+
+    if (error) {
+      const { data: existing } = await supabase
+        .from('cart_items')
+        .select('id, quantity')
+        .eq('user_id', user.id)
+        .eq('product_id', product.id)
+        .single();
+
+      if (existing) {
+        await supabase
+          .from('cart_items')
+          .update({ quantity: existing.quantity + 1 })
+          .eq('id', existing.id);
+      }
+    }
+    toast.success(`${product.name} ${t.addToCart}!`);
+  };
+
+  return (
+    <div className="p-4 md:p-8 max-w-6xl mx-auto space-y-6">
+      <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
+        <h1 className="text-2xl md:text-3xl font-bold font-display text-foreground">{t.hello}, {userName} 👋</h1>
+        <p className="text-muted-foreground mt-1">{t.freshFromFarm}</p>
+      </motion.div>
+
+      <div className="flex gap-2">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input placeholder={t.searchProducts} className="pl-10 h-12" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
+        </div>
+        <Button variant="outline" size="icon" className="h-12 w-12 shrink-0">
+          <Filter className="h-4 w-4" />
+        </Button>
+      </div>
+
+      <div className="flex gap-2 overflow-x-auto pb-1 -mx-4 px-4 md:mx-0 md:px-0">
+        {categories.map((cat) => (
+          <Button key={cat.key} variant={activeCategory === cat.key ? 'default' : 'outline'} size="sm" className="shrink-0 rounded-full" onClick={() => setActiveCategory(cat.key)}>
+            {cat.label}
+          </Button>
+        ))}
+      </div>
+
+      <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="rounded-2xl bg-gradient-hero p-5 text-primary-foreground">
+        <div className="flex items-center gap-2 mb-2">
+          <MapPin className="h-5 w-5" />
+          <span className="font-medium">{t.nearbyFarms}</span>
+        </div>
+        <p className="text-2xl font-bold font-display">12 farms within 15 km</p>
+        <p className="text-primary-foreground/70 text-sm mt-1">{t.freshFromFarm}</p>
+        <Button variant="secondary" size="sm" className="mt-3" onClick={() => navigate('/consumer/browse')}>{t.discoverFarms} →</Button>
+      </motion.div>
+
+      <div>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-bold font-display text-foreground">{t.freshProduce}</h2>
+          <button onClick={() => navigate('/consumer/browse')} className="text-sm text-primary font-medium hover:underline">{t.viewAll}</button>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="h-8 w-8 animate-spin text-primary" />
+          </div>
+        ) : filteredProducts.length === 0 ? (
+          <p className="text-muted-foreground text-center py-8">{t.noResults}</p>
+        ) : (
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {filteredProducts.map((product, i) => (
+              <ProductFlipCard
+                key={product.id}
+                product={product}
+                index={i}
+                onNavigate={(id) => navigate(`/consumer/product/${id}`)}
+                onAddToCart={handleAddToCart}
+                t={t}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default ConsumerHome;
